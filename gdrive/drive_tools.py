@@ -30,7 +30,6 @@ from core.server import server
 from core.config import get_transport_mode
 from gdrive.drive_helpers import (
     DRIVE_QUERY_PATTERNS,
-    FOLDER_MIME_TYPE,
     build_drive_list_params,
     check_public_link_permission,
     format_permission_info,
@@ -63,7 +62,6 @@ async def search_drive_files(
     include_items_from_all_drives: bool = True,
     corpora: Optional[str] = None,
     file_type: Optional[str] = None,
-    detailed: bool = True,
 ) -> str:
     """
     Searches for files and folders within a user's Google Drive, including shared drives.
@@ -83,10 +81,9 @@ async def search_drive_files(
                                    'presentation'/'slides', 'form', 'drawing', 'pdf', 'shortcut',
                                    'script', 'site', 'jam'/'jamboard') or any raw MIME type
                                    string (e.g. 'application/pdf'). Defaults to None (all types).
-        detailed (bool): Whether to include size, modified time, and link in results. Defaults to True.
 
     Returns:
-        str: A formatted list of found files/folders with their details (ID, name, type, and optionally size, modified time, link).
+        str: A formatted list of found files/folders with their details.
              Includes a nextPageToken line when more results are available.
     """
     logger.info(
@@ -122,7 +119,6 @@ async def search_drive_files(
         include_items_from_all_drives=include_items_from_all_drives,
         corpora=corpora,
         page_token=page_token,
-        detailed=detailed,
     )
 
     results = await asyncio.to_thread(service.files().list(**list_params).execute)
@@ -134,15 +130,39 @@ async def search_drive_files(
     header = f"Found {len(files)} files for {user_google_email} matching '{query}':"
     formatted_files_text_parts = [header]
     for item in files:
-        if detailed:
-            size_str = f", Size: {item.get('size', 'N/A')}" if "size" in item else ""
-            formatted_files_text_parts.append(
-                f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]}{size_str}, Modified: {item.get("modifiedTime", "N/A")}) Link: {item.get("webViewLink", "#")}'
-            )
-        else:
-            formatted_files_text_parts.append(
-                f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]})'
-            )
+        size_str = f", Size: {item.get('size', 'N/A')}" if "size" in item else ""
+        # Owner info
+        owners = item.get("owners", [])
+        owner_str = ", ".join(o.get("emailAddress", o.get("displayName", "?")) for o in owners) if owners else None
+        last_modifier = item.get("lastModifyingUser")
+        modifier_str = last_modifier.get("emailAddress", last_modifier.get("displayName", "?")) if last_modifier else None
+        # Location info
+        parents = item.get("parents", [])
+        item_drive_id = item.get("driveId")
+        # Build detail parts
+        parts = [f'Name: "{item["name"]}"', f'ID: {item["id"]}', f'Type: {item["mimeType"]}']
+        if size_str:
+            parts.append(f'Size: {item.get("size")}')
+        parts.append(f'Created: {item.get("createdTime", "N/A")}')
+        parts.append(f'Modified: {item.get("modifiedTime", "N/A")}')
+        if owner_str:
+            parts.append(f'Owner: {owner_str}')
+        if item.get("ownedByMe") is not None:
+            parts.append(f'OwnedByMe: {item["ownedByMe"]}')
+        if modifier_str:
+            parts.append(f'LastModifiedBy: {modifier_str}')
+        if parents:
+            parts.append(f'Parents: {", ".join(parents)}')
+        if item_drive_id:
+            parts.append(f'DriveId: {item_drive_id}')
+        if item.get("description"):
+            parts.append(f'Description: {item["description"][:200]}')
+        if item.get("starred"):
+            parts.append("Starred: true")
+        if item.get("shared"):
+            parts.append("Shared: true")
+        parts.append(f'Link: {item.get("webViewLink", "#")}')
+        formatted_files_text_parts.append(f"- {' | '.join(parts)}")
     if next_token:
         formatted_files_text_parts.append(f"nextPageToken: {next_token}")
     text_output = "\n".join(formatted_files_text_parts)
@@ -442,7 +462,6 @@ async def list_drive_items(
     include_items_from_all_drives: bool = True,
     corpora: Optional[str] = None,
     file_type: Optional[str] = None,
-    detailed: bool = True,
 ) -> str:
     """
     Lists files and folders, supporting shared drives.
@@ -462,7 +481,6 @@ async def list_drive_items(
                                    'presentation'/'slides', 'form', 'drawing', 'pdf', 'shortcut',
                                    'script', 'site', 'jam'/'jamboard') or any raw MIME type
                                    string (e.g. 'application/pdf'). Defaults to None (all types).
-        detailed (bool): Whether to include size, modified time, and link in results. Defaults to True.
 
     Returns:
         str: A formatted list of files/folders in the specified folder.
@@ -487,7 +505,6 @@ async def list_drive_items(
         include_items_from_all_drives=include_items_from_all_drives,
         corpora=corpora,
         page_token=page_token,
-        detailed=detailed,
     )
 
     results = await asyncio.to_thread(service.files().list(**list_params).execute)
@@ -501,77 +518,14 @@ async def list_drive_items(
     )
     formatted_items_text_parts = [header]
     for item in files:
-        if detailed:
-            size_str = f", Size: {item.get('size', 'N/A')}" if "size" in item else ""
-            formatted_items_text_parts.append(
-                f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]}{size_str}, Modified: {item.get("modifiedTime", "N/A")}) Link: {item.get("webViewLink", "#")}'
-            )
-        else:
-            formatted_items_text_parts.append(
-                f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]})'
-            )
+        size_str = f", Size: {item.get('size', 'N/A')}" if "size" in item else ""
+        formatted_items_text_parts.append(
+            f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]}{size_str}, Modified: {item.get("modifiedTime", "N/A")}) Link: {item.get("webViewLink", "#")}'
+        )
     if next_token:
         formatted_items_text_parts.append(f"nextPageToken: {next_token}")
     text_output = "\n".join(formatted_items_text_parts)
     return text_output
-
-
-async def _create_drive_folder_impl(
-    service,
-    user_google_email: str,
-    folder_name: str,
-    parent_folder_id: str = "root",
-) -> str:
-    """Internal implementation for create_drive_folder. Used by tests."""
-    resolved_folder_id = await resolve_folder_id(service, parent_folder_id)
-    file_metadata = {
-        "name": folder_name,
-        "parents": [resolved_folder_id],
-        "mimeType": FOLDER_MIME_TYPE,
-    }
-    created_file = await asyncio.to_thread(
-        service.files()
-        .create(
-            body=file_metadata,
-            fields="id, name, webViewLink",
-            supportsAllDrives=True,
-        )
-        .execute
-    )
-    link = created_file.get("webViewLink", "")
-    return (
-        f"Successfully created folder '{created_file.get('name', folder_name)}' (ID: {created_file.get('id', 'N/A')}) "
-        f"in folder '{parent_folder_id}' for {user_google_email}. Link: {link}"
-    )
-
-
-@server.tool()
-@handle_http_errors("create_drive_folder", service_type="drive")
-@require_google_service("drive", "drive_file")
-async def create_drive_folder(
-    service,
-    user_google_email: str,
-    folder_name: str,
-    parent_folder_id: str = "root",
-) -> str:
-    """
-    Creates a new folder in Google Drive, supporting creation within shared drives.
-
-    Args:
-        user_google_email (str): The user's Google email address. Required.
-        folder_name (str): The name for the new folder.
-        parent_folder_id (str): The ID of the parent folder. Defaults to 'root'.
-            For shared drives, use a folder ID within that shared drive.
-
-    Returns:
-        str: Confirmation message with folder name, ID, and link.
-    """
-    logger.info(
-        f"[create_drive_folder] Invoked. Email: '{user_google_email}', Folder: '{folder_name}', Parent: '{parent_folder_id}'"
-    )
-    return await _create_drive_folder_impl(
-        service, user_google_email, folder_name, parent_folder_id
-    )
 
 
 @server.tool()
@@ -605,14 +559,8 @@ async def create_drive_file(
         f"[create_drive_file] Invoked. Email: '{user_google_email}', File Name: {file_name}, Folder ID: {folder_id}, fileUrl: {fileUrl}"
     )
 
-    if content is None and fileUrl is None and mime_type != FOLDER_MIME_TYPE:
+    if not content and not fileUrl:
         raise Exception("You must provide either 'content' or 'fileUrl'.")
-
-    # Create folder (no content or media_body). Prefer create_drive_folder for new code.
-    if mime_type == FOLDER_MIME_TYPE:
-        return await _create_drive_folder_impl(
-            service, user_google_email, file_name, folder_id
-        )
 
     file_data = None
     resolved_folder_id = await resolve_folder_id(service, folder_id)
@@ -795,7 +743,7 @@ async def create_drive_file(
             raise Exception(
                 f"Unsupported URL scheme '{parsed_url.scheme}'. Only file://, http://, and https:// are supported."
             )
-    elif content is not None:
+    elif content:
         file_data = content.encode("utf-8")
         media = io.BytesIO(file_data)
 
@@ -2381,3 +2329,59 @@ async def set_drive_file_permissions(
     output_parts.extend(["", f"View link: {file_metadata.get('webViewLink', 'N/A')}"])
 
     return "\n".join(output_parts)
+
+
+@server.tool()
+@handle_http_errors("list_shared_drives", is_read_only=True, service_type="drive")
+@require_google_service("drive", "drive_read")
+async def list_shared_drives(
+    service,
+    user_google_email: str,
+    page_size: int = 100,
+) -> str:
+    """
+    Lists all shared drives (team drives) accessible to the user.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        page_size (int): Maximum number of shared drives to return. Defaults to 100.
+
+    Returns:
+        str: A formatted list of shared drives with their ID, name, and creation time.
+    """
+    logger.info(
+        f"[list_shared_drives] Invoked. Email: '{user_google_email}', page_size: {page_size}"
+    )
+
+    all_drives = []
+    page_token = None
+
+    while True:
+        params = {
+            "pageSize": min(page_size, 100),
+            "fields": "nextPageToken, drives(id, name, createdTime, kind)",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+
+        results = await asyncio.to_thread(
+            service.drives().list(**params).execute
+        )
+        drives = results.get("drives", [])
+        all_drives.extend(drives)
+
+        page_token = results.get("nextPageToken")
+        if not page_token or len(all_drives) >= page_size:
+            break
+
+    if not all_drives:
+        return f"No shared drives found for {user_google_email}."
+
+    formatted_parts = [
+        f"Found {len(all_drives)} shared drives for {user_google_email}:"
+    ]
+    for drive in all_drives:
+        formatted_parts.append(
+            f'- Name: "{drive["name"]}" (ID: {drive["id"]}, Created: {drive.get("createdTime", "N/A")})'
+        )
+    return "\n".join(formatted_parts)

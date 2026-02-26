@@ -29,6 +29,7 @@ drive:
     - create_drive_folder
     - import_to_google_doc
     - get_drive_shareable_link
+    - list_shared_drives
   extended:
     - list_drive_items
     - copy_drive_file
