@@ -42,10 +42,12 @@ _legacy_callback_registered = False
 session_middleware = Middleware(MCPSessionMiddleware)
 
 # CORS middleware for OAuth endpoints - allows MCP Inspector and other browser clients
+# Note: allow_credentials=True is incompatible with allow_origins=["*"]
+# So we either allow credentials with specific origins, or allow all origins without credentials
 cors_middleware = Middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allow all origins for OAuth discovery
-    allow_credentials=True,
+    allow_credentials=False,  # Can't use credentials with wildcard origin
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
