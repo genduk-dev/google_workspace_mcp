@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import List, Optional
@@ -230,13 +231,23 @@ class LocalDirectoryCredentialStore(CredentialStore):
             "expiry": credentials.expiry.isoformat() if credentials.expiry else None,
         }
 
+        tmp_path = None
         try:
-            fd = os.open(str(creds_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            # Several server processes can share one credentials directory. Writing
+            # beside the file and renaming it means a reader in another process sees
+            # the old grant or the new one, never a half-written file it takes for
+            # a missing login. mkstemp creates the file 0600.
+            fd, tmp_path = tempfile.mkstemp(
+                dir=os.path.dirname(creds_path), prefix=".", suffix=".tmp"
+            )
             with os.fdopen(fd, "w") as f:
                 json.dump(creds_data, f, indent=2)
+            os.replace(tmp_path, creds_path)
             logger.info(f"Stored credentials for {user_email} to {creds_path}")
             return True
         except IOError as e:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
             logger.error(
                 f"Error storing credentials for {user_email} to {creds_path}: {e}"
             )

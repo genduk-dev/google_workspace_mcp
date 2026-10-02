@@ -6,7 +6,7 @@ Covers file permissions, directory permissions, and path traversal prevention.
 import json
 import os
 import stat
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -74,6 +74,48 @@ class TestFilePermissions:
         assert data["token"] == "access_token_value"
         assert data["refresh_token"] == "refresh_token_value"
         assert data["client_id"] == "client_id_value"
+
+
+def _mock_creds(token):
+    creds = MagicMock()
+    creds.token = token
+    creds.refresh_token = "rtok"
+    creds.token_uri = "https://oauth2.googleapis.com/token"
+    creds.client_id = "cid"
+    creds.client_secret = "csec"
+    creds.scopes = ["openid"]
+    creds.expiry = None
+    return creds
+
+
+class TestAtomicWrite:
+    """A credential file is replaced whole, so another process never reads half of one."""
+
+    def test_failed_write_keeps_previous_file(self, cred_store):
+        cred_store.store_credential("user@example.com", _mock_creds("old"))
+        cred_path = cred_store._get_credential_path("user@example.com")
+
+        def dump_then_fail(data, f, **kwargs):
+            f.write('{"token": "ne')
+            raise IOError("disk full")
+
+        with patch("auth.credential_store.json.dump", side_effect=dump_then_fail):
+            result = cred_store.store_credential("user@example.com", _mock_creds("new"))
+
+        assert result is False
+        with open(cred_path) as f:
+            assert json.load(f)["token"] == "old"
+        assert os.listdir(cred_store.base_dir) == [os.path.basename(cred_path)]
+
+    def test_replace_leaves_no_temp_file(self, cred_store):
+        cred_store.store_credential("user@example.com", _mock_creds("one"))
+        cred_store.store_credential("user@example.com", _mock_creds("two"))
+
+        cred_path = cred_store._get_credential_path("user@example.com")
+        assert os.listdir(cred_store.base_dir) == [os.path.basename(cred_path)]
+        with open(cred_path) as f:
+            assert json.load(f)["token"] == "two"
+        assert cred_store.list_users() == ["user@example.com"]
 
 
 class TestPathTraversal:
