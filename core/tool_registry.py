@@ -169,9 +169,10 @@ def filter_server_tools(server) -> int:
                 tools_to_remove.add(tool_name)
 
     # 2. OAuth 2.1 filtering
-    if oauth21_enabled and "start_google_auth" in tool_components:
-        tools_to_remove.add("start_google_auth")
-        logger.info("OAuth 2.1 enabled: disabling start_google_auth tool")
+    for legacy_auth_tool in ("start_google_auth", "complete_google_auth"):
+        if oauth21_enabled and legacy_auth_tool in tool_components:
+            tools_to_remove.add(legacy_auth_tool)
+            logger.info(f"OAuth 2.1 enabled: disabling {legacy_auth_tool} tool")
 
     # 3. Read-only mode filtering (skipped when granular permissions are active)
     if read_only_mode and not permissions_mode:

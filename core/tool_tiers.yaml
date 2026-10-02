@@ -1,5 +1,8 @@
 gmail:
   core:
+    # Any tool can ask for a sign-in, so the way to finish one from another
+    # machine is in every tier.
+    - complete_google_auth
     - search_gmail_messages
     - get_gmail_message_content
     - get_gmail_messages_content_batch

@@ -6,7 +6,7 @@ import logging
 import os
 from typing import List, Optional
 from importlib import metadata
-from urllib.parse import urlparse, ParseResult
+from urllib.parse import parse_qs, urlparse, ParseResult
 
 from core.warning_filters import install_startup_warning_filters
 
@@ -940,3 +940,69 @@ async def start_google_auth(
     except Exception as e:
         logger.error(f"Failed to start Google authentication flow: {e}", exc_info=True)
         return f"**Error:** An unexpected error occurred: {e}"
+
+
+@server.tool(
+    title="Complete Google Auth",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+async def complete_google_auth(callback_url: str) -> str:
+    """
+    Finish a Google sign-in whose browser could not reach this server's callback.
+
+    When this server runs on another machine than the browser, Google's redirect to
+    the callback address (http://localhost:<port>/oauth2callback) fails to load.
+    Ask the user to copy the full address of that failed page and pass it here.
+    The sign-in then completes as if the callback had arrived.
+
+    NOTE: This is a legacy OAuth 2.0 tool and is disabled when OAuth 2.1 is enabled.
+
+    Args:
+        callback_url: The full address the browser was redirected to, with its
+            `code` and `state` query parameters.
+    """
+    if is_oauth21_enabled():
+        return (
+            "complete_google_auth is disabled when OAuth 2.1 is enabled. "
+            "Authenticate through your MCP client's OAuth 2.1 flow and retry the "
+            "original tool."
+        )
+
+    params = parse_qs(urlparse(callback_url).query)
+    if "error" in params:
+        return (
+            f"**Authentication Error:** Google returned an error: {params['error'][0]}."
+        )
+    if "code" not in params or "state" not in params:
+        return (
+            "**Error:** The address has no `code` and `state`. Pass the full address "
+            "of the page Google redirected to after the user authorized access."
+        )
+
+    error_message = check_client_secrets()
+    if error_message:
+        return f"**Authentication Error:** {error_message}"
+
+    try:
+        # The state must be one this server issued and has not consumed, so only
+        # a sign-in started here can be completed.
+        verified_user_id, _ = await handle_auth_callback(
+            scopes=get_current_scopes(),
+            authorization_response=callback_url,
+            redirect_uri=get_oauth_redirect_uri_for_current_mode(),
+            session_id=None,
+        )
+    except Exception as e:
+        logger.error(f"Failed to complete Google authentication: {e}", exc_info=True)
+        return f"**Authentication Error:** {e}"
+
+    logger.info(f"complete_google_auth: authenticated user {verified_user_id}.")
+    return (
+        f"Signed in to Google as {verified_user_id}. Retry the original request "
+        f"with user_google_email={verified_user_id}."
+    )

@@ -627,6 +627,10 @@ async def start_auth_flow(
             )
 
         message_lines.append(
+            "\nIf the page Google redirects to after authorization does not load (this server runs on another machine), "
+            "**ask the user for that page's full address and pass it to `complete_google_auth`.**"
+        )
+        message_lines.append(
             f"\nThe application will use the new credentials. If '{user_google_email}' was provided, it must match the authenticated account."
         )
         return "\n".join(message_lines)
