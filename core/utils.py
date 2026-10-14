@@ -270,9 +270,9 @@ def validate_file_path(file_path: str) -> Path:
 
     Raises:
         UserInputError: If local file access is disabled on this server.
-        FileNotFoundError: If the path does not exist on the server.
+        FileNotFoundError: If the path is allowed but does not exist.
         ValueError: If the path is outside allowed directories or targets
-                    a sensitive location.
+                    a sensitive location, whether or not it exists.
     """
     if not local_file_access_enabled():
         raise UserInputError(
@@ -282,18 +282,6 @@ def validate_file_path(file_path: str) -> Path:
         )
 
     resolved = Path(file_path).resolve()
-
-    if not resolved.exists():
-        # Over HTTP the server may be on another machine, where a caller-side
-        # path can never exist, so say so rather than imply a typo.
-        hint = (
-            " Paths resolve on the MCP server's filesystem; if the server runs "
-            "on a different machine than the client, provide the file by URL "
-            "or as inline content instead."
-            if get_transport_mode() == "streamable-http"
-            else ""
-        )
-        raise FileNotFoundError(f"Path does not exist: {resolved}.{hint}")
 
     # Block sensitive file patterns regardless of allowlist
     resolved_str = str(resolved)
@@ -378,14 +366,34 @@ def validate_file_path(file_path: str) -> Path:
     for allowed in allowed_dirs:
         try:
             resolved.relative_to(allowed)
-            return resolved
+            break
         except ValueError:
             continue
+    else:
+        raise ValueError(
+            f"Access to '{resolved_str}' is not allowed: "
+            f"path is outside permitted directories ({', '.join(str(d) for d in allowed_dirs)}). "
+            f"Set ALLOWED_FILE_DIRS to adjust.{_server_side_path_hint()}"
+        )
 
-    raise ValueError(
-        f"Access to '{resolved_str}' is not allowed: "
-        f"path is outside permitted directories ({', '.join(str(d) for d in allowed_dirs)}). "
-        "Set ALLOWED_FILE_DIRS to adjust."
+    # Checked last: a path refused above gets the same answer whether or not it
+    # exists, so a caller cannot use this to learn which files are on the server.
+    if not resolved.exists():
+        raise FileNotFoundError(
+            f"Path does not exist: {resolved}.{_server_side_path_hint()}"
+        )
+    return resolved
+
+
+def _server_side_path_hint() -> str:
+    """Over HTTP the server may be on another machine, where a caller-side path
+    can never exist, so say so rather than imply a typo."""
+    if get_transport_mode() != "streamable-http":
+        return ""
+    return (
+        " Paths resolve on the MCP server's filesystem; if the server runs "
+        "on a different machine than the client, provide the file by URL "
+        "or as inline content instead."
     )
 
 
