@@ -135,3 +135,55 @@ def test_validate_file_path_blocks_dot_env_variant_anywhere(monkeypatch, tmp_pat
 
     with pytest.raises(ValueError, match="\\.env files may contain secrets"):
         validate_file_path(str(secret_file))
+
+
+def _refusal(file_path):
+    with pytest.raises(ValueError) as exc:
+        validate_file_path(file_path)
+    return str(exc.value).replace(file_path, "<path>")
+
+
+def test_validate_file_path_refuses_outside_the_allowlist_whether_or_not_the_file_exists(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("ALLOWED_FILE_DIRS", raising=False)
+    storage_dir = tmp_path / "attachments"
+    storage_dir.mkdir()
+    monkeypatch.setattr(attachment_storage, "STORAGE_DIR", storage_dir)
+
+    outside = tmp_path / "config"
+    outside.mkdir()
+    present = outside / "token.json"
+    present.write_text("{}", encoding="utf-8")
+    absent = outside / "other.json"
+
+    assert _refusal(str(present.resolve())) == _refusal(str(absent.resolve()))
+    assert "outside permitted directories" in _refusal(str(absent.resolve()))
+
+
+def test_validate_file_path_refuses_a_secret_name_whether_or_not_the_file_exists(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("ALLOWED_FILE_DIRS", raising=False)
+    monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path)
+
+    present_dir = tmp_path / "present"
+    present_dir.mkdir()
+    (present_dir / "credentials.json").write_text("{}", encoding="utf-8")
+    absent_dir = tmp_path / "absent"
+    absent_dir.mkdir()
+
+    present = str((present_dir / "credentials.json").resolve())
+    absent = str((absent_dir / "credentials.json").resolve())
+    assert _refusal(present) == _refusal(absent)
+    assert "commonly contains secrets" in _refusal(absent)
+
+
+def test_validate_file_path_reports_a_missing_file_only_inside_the_allowlist(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("ALLOWED_FILE_DIRS", raising=False)
+    monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="Path does not exist"):
+        validate_file_path(str(tmp_path / "not-here.txt"))

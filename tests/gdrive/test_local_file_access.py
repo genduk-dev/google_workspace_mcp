@@ -22,6 +22,7 @@ from fastmcp import Client, FastMCP
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+import core.attachment_storage as attachment_storage  # noqa: E402
 from core.utils import (  # noqa: E402
     UserInputError,
     hide_local_file_args,
@@ -319,21 +320,40 @@ class TestValidateFilePath:
 
     @patch("core.utils.get_transport_mode", return_value="streamable-http")
     def test_missing_path_over_http_hints_at_the_server_boundary(
-        self, _mode, monkeypatch
+        self, _mode, monkeypatch, tmp_path
     ):
         monkeypatch.delenv("WORKSPACE_MCP_DISABLE_LOCAL_FILES", raising=False)
+        monkeypatch.delenv("ALLOWED_FILE_DIRS", raising=False)
+        monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path)
         with patch("core.utils.is_stateless_mode", return_value=False):
             with pytest.raises(FileNotFoundError) as exc:
-                validate_file_path("/definitely/not/here.md")
+                validate_file_path(str(tmp_path / "not-here.md"))
         assert "different machine" in str(exc.value)
 
     @patch("core.utils.get_transport_mode", return_value="stdio")
-    def test_missing_path_on_stdio_stays_plain(self, _mode, monkeypatch):
+    def test_missing_path_on_stdio_stays_plain(self, _mode, monkeypatch, tmp_path):
         monkeypatch.delenv("WORKSPACE_MCP_DISABLE_LOCAL_FILES", raising=False)
+        monkeypatch.delenv("ALLOWED_FILE_DIRS", raising=False)
+        monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path)
         with patch("core.utils.is_stateless_mode", return_value=False):
             with pytest.raises(FileNotFoundError) as exc:
-                validate_file_path("/definitely/not/here.md")
+                validate_file_path(str(tmp_path / "not-here.md"))
         assert "different machine" not in str(exc.value)
+
+    @patch("core.utils.get_transport_mode", return_value="streamable-http")
+    def test_caller_side_path_over_http_hints_at_the_server_boundary(
+        self, _mode, monkeypatch, tmp_path
+    ):
+        """A client's own path is outside the allowlist on the server, so the
+        hint rides on that refusal now that it comes before the existence check."""
+        monkeypatch.delenv("WORKSPACE_MCP_DISABLE_LOCAL_FILES", raising=False)
+        monkeypatch.delenv("ALLOWED_FILE_DIRS", raising=False)
+        monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path)
+        with patch("core.utils.is_stateless_mode", return_value=False):
+            with pytest.raises(ValueError) as exc:
+                validate_file_path("/definitely/not/here.md")
+        assert "outside permitted directories" in str(exc.value)
+        assert "different machine" in str(exc.value)
 
 
 class TestSchemaThroughFastMCP:
