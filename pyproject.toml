@@ -164,10 +164,12 @@ core = ["tool_tiers.yaml"]
 # Security floors for transitively-pulled deps (not direct dependencies).
 # These are constraints only: they force a patched version *if* the package is
 # pulled in (mcp via fastmcp, pyasn1 via google-auth/pyasn1-modules,
-# oauthlib via google-auth-oauthlib/requests-oauthlib) without
-# adding it as a direct dependency. Remove once upstream floors cover the CVEs.
+# oauthlib via google-auth-oauthlib/requests-oauthlib, certifi via
+# requests/httpx) without adding it as a direct dependency. Remove once
+# upstream floors cover the CVEs.
 constraint-dependencies = [
     "mcp>=1.28.1",    # GHSA: HTTP principal verification, WS Host/Origin, cross-client tasks
     "pyasn1>=0.6.4",  # GHSA: REAL-decode resource consumption, quadratic OID DoS
     "oauthlib>=4.0.0", # GHSA-hj66-6f7g-4r5v: revocation endpoint JSONP injection
+    "certifi>=2026.10.19", # Distrusts eMudhra roots after the intermediate CA key compromise
 ]
