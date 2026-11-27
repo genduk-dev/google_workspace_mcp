@@ -33,6 +33,7 @@ from core.tool_registry import (
     set_disabled_tools,
     wrap_server_tool_method,
     filter_server_tools,
+    mark_always_load_tools,
 )
 from auth.scopes import set_enabled_tools
 
@@ -71,9 +72,9 @@ _fastmcp_cloud_overrides = enforce_fastmcp_cloud_defaults()
 logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
 
 # Suppress httpx/httpcore INFO logs that leak access tokens in URLs
-# (e.g. tokeninfo?access_token=ya29.xxx)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
+# (e.g. tokeninfo?access_token=ya29.xxx). FastMCP 4 uses the httpx2 fork.
+for _http_logger in ("httpx", "httpcore", "httpx2", "httpcore2"):
+    logging.getLogger(_http_logger).setLevel(logging.WARNING)
 
 # Reload OAuth configuration after env vars loaded
 reload_oauth_config()
@@ -187,6 +188,7 @@ set_disabled_tools(resolve_disabled_tools())
 
 # Filter tools based on configuration
 filter_server_tools(server)
+mark_always_load_tools(server)
 
 # Configure authentication after scopes are known
 configure_server_for_http()
