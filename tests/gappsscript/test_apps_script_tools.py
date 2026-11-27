@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from typing import get_type_hints
 from unittest.mock import AsyncMock, Mock, call, patch
 
@@ -24,6 +25,7 @@ from pydantic import TypeAdapter
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from core.utils import UserInputError
+import auth.google_auth as google_auth
 import auth.service_decorator as service_decorator
 
 # Import the internal implementation functions (not the decorated ones)
@@ -64,6 +66,7 @@ from gappsscript.apps_script_tools import (
     get_script_activity,
     run_script_function,
 )
+from gdrive.drive_helpers import INCOMPLETE_SEARCH_WARNING
 
 
 def _parameters_adapter():
@@ -111,6 +114,60 @@ async def test_list_script_projects():
     assert "Found 1 Apps Script projects" in result
     assert "Test Project" in result
     assert "test123" in result
+
+
+@pytest.mark.asyncio
+async def test_list_script_projects_searches_shared_drives():
+    """Projects stored in shared drives are part of the search."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {"files": []}
+
+    await _list_script_projects_impl(
+        service=mock_service, user_google_email="test@example.com", page_size=50
+    )
+
+    kwargs = mock_service.files().list.call_args.kwargs
+    assert kwargs["corpora"] == "allDrives"
+    assert kwargs["supportsAllDrives"] is True
+    assert kwargs["includeItemsFromAllDrives"] is True
+    assert kwargs["fields"] == (
+        "nextPageToken, incompleteSearch, files(id, name, createdTime, modifiedTime)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_script_projects_keeps_page_token_on_empty_page():
+    """An empty page that has a next page is not reported as no projects."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {
+        "files": [],
+        "nextPageToken": "page-2",
+        "incompleteSearch": True,
+    }
+
+    result = await _list_script_projects_impl(
+        service=mock_service, user_google_email="test@example.com", page_size=50
+    )
+
+    assert "No Apps Script projects found" not in result
+    assert "page-2" in result
+    assert INCOMPLETE_SEARCH_WARNING in result
+
+
+@pytest.mark.asyncio
+async def test_list_script_projects_flags_incomplete_empty_search():
+    """An empty incomplete search is not reported as definitively empty."""
+    mock_service = Mock()
+    mock_service.files().list().execute.return_value = {
+        "files": [],
+        "incompleteSearch": True,
+    }
+
+    result = await _list_script_projects_impl(
+        service=mock_service, user_google_email="test@example.com", page_size=50
+    )
+
+    assert result == f"No Apps Script projects found.\n{INCOMPLETE_SEARCH_WARNING}"
 
 
 @pytest.mark.asyncio
@@ -701,6 +758,68 @@ async def test_list_deployments_head_deployment_has_no_version():
 
 
 @pytest.mark.asyncio
+async def test_list_deployments_reads_every_page():
+    """Deployments on a later page are listed."""
+    mock_service = Mock()
+    deployment_list = mock_service.projects().deployments().list
+    deployment_list.return_value.execute.side_effect = [
+        {"deployments": [{"deploymentId": "deploy1"}], "nextPageToken": "page-2"},
+        {"deployments": [{"deploymentId": "deploy2"}]},
+    ]
+
+    result = await _list_deployments_impl(
+        service=mock_service, user_google_email="test@example.com", script_id="test123"
+    )
+
+    assert deployment_list.call_args_list == [
+        call(scriptId="test123"),
+        call(scriptId="test123", pageToken="page-2"),
+    ]
+    assert "deploy1" in result
+    assert "deploy2" in result
+
+
+@pytest.mark.asyncio
+async def test_update_deployment_preserves_unspecified_config_fields():
+    mock_service = Mock()
+    mock_service.projects().deployments().get().execute.return_value = {
+        "deploymentConfig": {
+            "scriptId": "test123",
+            "versionNumber": 6,
+            "manifestFileName": "appsscript",
+            "description": "Old description",
+        }
+    }
+    mock_service.projects().deployments().update().execute.return_value = {
+        "deploymentId": "deploy123",
+        "deploymentConfig": {
+            "scriptId": "test123",
+            "versionNumber": 6,
+            "manifestFileName": "appsscript",
+            "description": "New description",
+        },
+    }
+
+    await _update_deployment_impl(
+        service=mock_service,
+        user_google_email="test@example.com",
+        script_id="test123",
+        deployment_id="deploy123",
+        description="New description",
+    )
+
+    _, update_kwargs = mock_service.projects().deployments().update.call_args
+    assert update_kwargs["body"] == {
+        "deploymentConfig": {
+            "scriptId": "test123",
+            "versionNumber": 6,
+            "manifestFileName": "appsscript",
+            "description": "New description",
+        }
+    }
+
+
+@pytest.mark.asyncio
 async def test_update_deployment():
     """Test updating deployment wraps fields in deploymentConfig (issue #836)."""
     mock_service = Mock()
@@ -712,6 +831,9 @@ async def test_update_deployment():
         },
     }
 
+    mock_service.projects().deployments().get().execute.return_value = {
+        "deploymentConfig": {"scriptId": "test123", "manifestFileName": "appsscript"}
+    }
     mock_service.projects().deployments().update().execute.return_value = mock_response
 
     result = await _update_deployment_impl(
@@ -730,6 +852,7 @@ async def test_update_deployment():
     assert update_kwargs["body"] == {
         "deploymentConfig": {
             "scriptId": "test123",
+            "manifestFileName": "appsscript",
             "description": "Updated description",
         }
     }
@@ -752,6 +875,13 @@ async def test_update_deployment_with_version_number():
         },
     }
 
+    mock_service.projects().deployments().get().execute.return_value = {
+        "deploymentConfig": {
+            "scriptId": "test123",
+            "versionNumber": 1,
+            "manifestFileName": "appsscript",
+        }
+    }
     mock_service.projects().deployments().update().execute.return_value = mock_response
 
     result = await _update_deployment_impl(
@@ -768,12 +898,80 @@ async def test_update_deployment_with_version_number():
         "deploymentConfig": {
             "scriptId": "test123",
             "versionNumber": 2,
+            "manifestFileName": "appsscript",
             "description": "v2 - updated layout",
         }
     }
 
     assert "Version: 2" in result
     assert "v2 - updated layout" in result
+
+
+@pytest.mark.asyncio
+async def test_update_deployment_preserves_description_when_blank():
+    """Blank descriptions leave the existing deployment description intact."""
+    mock_service = Mock()
+    mock_service.projects().deployments().get().execute.return_value = {
+        "deploymentConfig": {
+            "scriptId": "test123",
+            "versionNumber": 1,
+            "manifestFileName": "appsscript",
+            "description": "Production",
+        }
+    }
+    mock_service.projects().deployments().update().execute.return_value = {
+        "deploymentId": "deploy123",
+        "deploymentConfig": {
+            "scriptId": "test123",
+            "versionNumber": 2,
+            "manifestFileName": "appsscript",
+            "description": "Production",
+        },
+    }
+
+    await _update_deployment_impl(
+        service=mock_service,
+        user_google_email="test@example.com",
+        script_id="test123",
+        deployment_id="deploy123",
+        description="   ",
+        version_number=2,
+    )
+
+    _, update_kwargs = mock_service.projects().deployments().update.call_args
+    assert update_kwargs["body"]["deploymentConfig"]["description"] == "Production"
+
+
+@pytest.mark.asyncio
+async def test_update_deployment_orders_concurrent_updates_for_same_script():
+    """A later update must read the config after an earlier update lands."""
+    config = {"scriptId": "test123", "versionNumber": 1, "description": "Old"}
+
+    def read_config():
+        snapshot = dict(config)
+        time.sleep(0.05)
+        return {"deploymentConfig": snapshot}
+
+    def write_config(scriptId, deploymentId, body):
+        config.clear()
+        config.update(body["deploymentConfig"])
+        return Mock(execute=Mock(return_value=body))
+
+    mock_service = Mock()
+    deployments = mock_service.projects.return_value.deployments.return_value
+    deployments.get.return_value.execute.side_effect = read_config
+    deployments.update.side_effect = write_config
+
+    await asyncio.gather(
+        _update_deployment_impl(
+            mock_service, "test@example.com", "test123", "deploy123", "New"
+        ),
+        _update_deployment_impl(
+            mock_service, "test@example.com", "test123", "deploy123", None, 2
+        ),
+    )
+
+    assert config == {"scriptId": "test123", "versionNumber": 2, "description": "New"}
 
 
 @pytest.mark.asyncio
@@ -786,6 +984,13 @@ async def test_manage_deployment_update_allows_version_number_without_descriptio
             "scriptId": "test123",
             "versionNumber": 2,
         },
+    }
+    mock_service.projects().deployments().get().execute.return_value = {
+        "deploymentConfig": {
+            "scriptId": "test123",
+            "versionNumber": 1,
+            "manifestFileName": "appsscript",
+        }
     }
     mock_service.projects().deployments().update().execute.return_value = mock_response
 
@@ -804,6 +1009,7 @@ async def test_manage_deployment_update_allows_version_number_without_descriptio
         "deploymentConfig": {
             "scriptId": "test123",
             "versionNumber": 2,
+            "manifestFileName": "appsscript",
         }
     }
     assert "Version: 2" in result
@@ -888,6 +1094,9 @@ async def test_list_script_processes_against_discovery_schema(
 async def test_delete_script_project():
     """Test deleting a script project"""
     mock_service = Mock()
+    mock_service.files().get().execute.return_value = {
+        "mimeType": "application/vnd.google-apps.script"
+    }
     mock_service.files().delete().execute.return_value = {}
 
     result = await _delete_script_project_impl(
@@ -895,6 +1104,53 @@ async def test_delete_script_project():
     )
 
     assert "Deleted Apps Script project: test123" in result
+
+
+@pytest.mark.asyncio
+async def test_delete_script_project_reaches_shared_drives() -> None:
+    """Projects in shared drives are listed, so they must be deletable too."""
+    mock_service = Mock()
+    mock_service.files().get().execute.return_value = {
+        "mimeType": "application/vnd.google-apps.script"
+    }
+
+    await _delete_script_project_impl(
+        service=mock_service, user_google_email="test@example.com", script_id="test123"
+    )
+
+    assert mock_service.files().get.call_args.kwargs == {
+        "fileId": "test123",
+        "fields": "mimeType",
+        "supportsAllDrives": True,
+    }
+    assert mock_service.files().delete.call_args.kwargs == {
+        "fileId": "test123",
+        "supportsAllDrives": True,
+    }
+    mock_service.files().delete.return_value.execute.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_script_project_refuses_other_files() -> None:
+    """A Doc or Sheet ID is refused instead of being deleted past the trash."""
+    mock_service = Mock()
+    mock_service.files().get().execute.return_value = {
+        "mimeType": "application/vnd.google-apps.document"
+    }
+
+    with pytest.raises(UserInputError, match="not an Apps Script project"):
+        await _delete_script_project_impl(
+            service=mock_service,
+            user_google_email="test@example.com",
+            script_id="doc123",
+        )
+
+    assert mock_service.files().get.call_args.kwargs == {
+        "fileId": "doc123",
+        "fields": "mimeType",
+        "supportsAllDrives": True,
+    }
+    mock_service.files().delete.return_value.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -926,6 +1182,28 @@ async def test_list_versions():
     assert "Initial version" in result
     assert "Version 2" in result
     assert "Bug fix" in result
+
+
+@pytest.mark.asyncio
+async def test_list_versions_reads_every_page():
+    """Versions on a later page are listed."""
+    mock_service = Mock()
+    version_list = mock_service.projects().versions().list
+    version_list.return_value.execute.side_effect = [
+        {"versions": [{"versionNumber": 1}], "nextPageToken": "page-2"},
+        {"versions": [{"versionNumber": 2}]},
+    ]
+
+    result = await _list_versions_impl(
+        service=mock_service, user_google_email="test@example.com", script_id="test123"
+    )
+
+    assert version_list.call_args_list == [
+        call(scriptId="test123"),
+        call(scriptId="test123", pageToken="page-2"),
+    ]
+    assert "Version 1" in result
+    assert "Version 2" in result
 
 
 @pytest.mark.asyncio
@@ -1584,7 +1862,8 @@ async def test_project_actions_authenticate_only_required_service(
     assert authenticate.call_args.args[1] == service_type
     assert authenticate.call_args.args[5] == service_decorator._resolve_scopes(scopes)
     assert impl.call_args.args[:2] == (service, "u@e.com")
-    service.close.assert_called_once()
+    service.close.assert_not_called()
+    assert google_auth._idle_http[-1][1] is service._http.http
 
 
 @pytest.mark.asyncio
